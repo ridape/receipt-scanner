@@ -4,141 +4,259 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Receipt Scanner</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.0.2/tesseract.min.js"></script>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            padding: 20px;
-            max-width: 600px;
-            margin: 0 auto;
-        }
-        h1 {
-            text-align: center;
-        }
-        input[type="file"] {
-            margin-bottom: 20px;
-        }
-        button {
-            display: block;
-            margin: 20px auto;
-            padding: 10px 20px;
-            font-size: 16px;
-            cursor: pointer;
-        }
-        .loading {
-            font-style: italic;
-            color: gray;
-        }
-        .result {
-            margin-top: 20px;
-            padding: 10px;
-            border: 1px solid #ccc;
-            border-radius: 5px;
-            background-color: #f9f9f9;
-        }
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        img { max-width: 100%; margin-top: 10px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1); }
+        .card { padding: 10px; border: 1px solid #ccc; border-radius: 8px; margin-top: 10px; }
+        .loading { font-style: italic; color: gray; }
     </style>
 </head>
 <body>
     <h1>Receipt Scanner</h1>
-    <input type="file" id="receiptInput" accept="image/*">
-    <button id="start-oauth">Start OAuth</button>
-    <div id="result" class="result" style="display: none;"></div>
+    <input type="file" accept="image/*" id="receiptInput">
+    <br>
+    <img id="preview" style="display:none;" alt="Receipt Preview">
+    <div id="result" class="card" style="display:none;"></div>
+    <div id="summary" class="card" style="margin-top: 20px; display: none;"></div>
 
     <script>
-        // Replace these placeholders with your actual credentials
-        const GOOGLE_CLIENT_ID = 'YOUR_CLIENT_ID'; // Replace with your Client ID
-        const GOOGLE_CLIENT_SECRET = 'YOUR_CLIENT_SECRET'; // Replace with your Client Secret
-        const GOOGLE_REDIRECT_URI = 'https://ridape.github.io/receipt-scanner/oauth-callback';
-        const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
-        let accessToken = null;
+        let receiptData = [];
+        const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyVLYCSIxgmiFqzw4ZsPSMq4waugu5TZK_zvw6JDHRybND6h6PKF2HQnA_x-js-zGLq/exec";
+        const GOOGLE_DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
 
-        // Start OAuth flow
-        document.getElementById('start-oauth').addEventListener('click', () => {
-            const authUrl = `https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${GOOGLE_REDIRECT_URI}&scope=${GOOGLE_SCOPE}&access_type=offline`;
-            window.location.href = authUrl;
+        // Mapping of business names to categories
+        const businessCategoryMap = {
+            'staples': 'Office Supplies',
+            'office depot': 'Office Supplies',
+            'hilton': 'Travel',
+            'marriott': 'Travel',
+            'delta': 'Travel',
+            'mcdonalds': 'Meals & Entertainment',
+            'starbucks': 'Meals & Entertainment',
+        };
+
+        // Keyword mapping for categories
+        const categoryKeywordMap = {
+            'Office Supplies': [
+                'office', 'stationery', 'supplies', 'paper', 'printer', 'ink', 'stapler', 'folder', 'notebook', 'pen', 'pencil',
+                'desk', 'chair', 'filing', 'envelope', 'sticky notes', 'tape', 'scissors', 'ruler', 'marker', 'highlighter'
+            ],
+            'Travel': [
+                'flight', 'hotel', 'car rental', 'airport', 'luggage', 'ticket', 'reservation', 'vacation', 'trip', 'boarding pass',
+                'check-in', 'check-out', 'suite', 'motel', 'hostel', 'airline', 'train', 'bus', 'taxi', 'uber', 'lyft'
+            ],
+            'Meals & Entertainment': [
+                'restaurant', 'bistro', 'dining', 'cafe', 'coffee', 'bar', 'pub', 'grill', 'pizza', 'burger', 'sushi', 'steakhouse',
+                'bakery', 'buffet', 'fast food', 'takeout', 'delivery', 'menu', 'tip', 'waiter', 'waitress', 'chef', 'brunch', 'lunch',
+                'dinner', 'dessert', 'wine', 'beer', 'cocktail', 'entertainment', 'movie', 'theater', 'concert', 'ticket', 'show', 'event'
+            ],
+            'Software & Subscriptions': [
+                'software', 'subscription', 'license', 'app', 'application', 'cloud', 'saas', 'platform', 'tool', 'service', 'renewal',
+                'membership', 'plan', 'upgrade', 'download', 'install', 'update', 'patch', 'bug fix', 'feature', 'integration'
+            ],
+            'Utilities': [
+                'electric', 'water', 'internet', 'utility', 'gas', 'power', 'heating', 'cooling', 'air conditioning', 'cable', 'phone',
+                'mobile', 'broadband', 'wifi', 'router', 'modem', 'bill', 'payment', 'meter', 'usage', 'consumption'
+            ],
+            'Marketing & Advertising': [
+                'advertising', 'marketing', 'promotion', 'campaign', 'social media', 'seo', 'sem', 'ppc', 'google ads', 'facebook ads',
+                'instagram ads', 'twitter ads', 'influencer', 'sponsorship', 'branding', 'logo', 'design', 'print', 'flyer', 'brochure',
+                'banner', 'poster', 'email', 'newsletter', 'analytics', 'metrics', 'roi', 'ctr', 'conversion'
+            ],
+            'Miscellaneous': [] // Default category
+        };
+
+        document.getElementById('receiptInput').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    document.getElementById('preview').src = e.target.result;
+                    document.getElementById('preview').style.display = 'block';
+                    processReceipt(e.target.result, file);
+                };
+                reader.readAsDataURL(file);
+            }
         });
 
-        // Handle OAuth redirect
-        const urlParams = new URLSearchParams(window.location.search);
-        const authorizationCode = urlParams.get('code');
-
-        if (authorizationCode) {
-            exchangeCodeForToken(authorizationCode);
-        }
-
-        // Exchange authorization code for access token
-        async function exchangeCodeForToken(code) {
-            try {
-                const response = await fetch('https://oauth2.googleapis.com/token', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                    },
-                    body: new URLSearchParams({
-                        code: code,
-                        client_id: GOOGLE_CLIENT_ID,
-                        client_secret: GOOGLE_CLIENT_SECRET,
-                        redirect_uri: GOOGLE_REDIRECT_URI,
-                        grant_type: 'authorization_code',
-                    }),
-                });
-
-                const data = await response.json();
-                if (data.error) {
-                    throw new Error(data.error_description || 'Failed to exchange code for token');
-                }
-
-                accessToken = data.access_token;
-                console.log('Access Token:', accessToken);
-                document.getElementById('result').innerHTML = '<p>OAuth successful! You can now upload receipts.</p>';
-                document.getElementById('result').style.display = 'block';
-            } catch (error) {
-                console.error('OAuth Error:', error);
-                document.getElementById('result').innerHTML = `<p>Error: ${error.message}</p>`;
-                document.getElementById('result').style.display = 'block';
-            }
-        }
-
-        // Handle file upload
-        document.getElementById('receiptInput').addEventListener('change', async (event) => {
-            if (!accessToken) {
-                alert('Please complete the OAuth flow first.');
-                return;
-            }
-
-            const file = event.target.files[0];
-            if (!file) return;
-
-            const formData = new FormData();
-            formData.append('file', file);
-
-            document.getElementById('result').innerHTML = '<p class="loading">Uploading receipt, please wait...</p>';
+        async function processReceipt(imageSrc, file) {
+            document.getElementById('result').innerHTML = '<p class="loading">Processing receipt, please wait...</p>';
             document.getElementById('result').style.display = 'block';
 
             try {
-                const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${accessToken}`,
-                    },
-                    body: formData,
-                });
+                const { data: { text } } = await Tesseract.recognize(imageSrc, 'eng', { logger: m => console.log(m) });
+                const extractedData = extractRelevantData(text);
+                const imageUrl = await uploadImageToDrive(file); // Upload image to Google Drive
+                extractedData.imageUrl = imageUrl; // Add image URL to extracted data
+                receiptData.push(extractedData);
+                updateSummary();
+                sendToGoogleSheets(extractedData);
+                displayResult(extractedData);
+            } catch (error) {
+                document.getElementById('result').innerHTML = '<p>Error processing the receipt.</p>';
+                console.error(error);
+            }
+        }
 
-                const data = await response.json();
-                if (data.error) {
-                    throw new Error(data.error.message || 'Failed to upload file');
+        async function uploadImageToDrive(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // Replace with your Google Drive API access token
+            const accessToken = 'YOUR_GOOGLE_DRIVE_ACCESS_TOKEN';
+
+            const response = await fetch(GOOGLE_DRIVE_UPLOAD_URL, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                },
+                body: formData,
+            });
+
+            const data = await response.json();
+            return `https://drive.google.com/uc?id=${data.id}`; // Return the image URL
+        }
+
+        function extractRelevantData(text) {
+            let date = extractDate(text);
+            let vendor = extractVendor(text);
+            let { subtotal, total } = extractAmounts(text);
+            let category = guessCategoryFromBusinessName(vendor) || extractCategory(text); // Guess category from business name first
+            let paymentMethod = extractPaymentMethod(text);
+
+            return {
+                date,
+                vendor,
+                subtotal: parseFloat(subtotal),
+                total: parseFloat(total),
+                category,
+                description: 'N/A',
+                paymentMethod,
+            };
+        }
+
+        function extractDate(text) {
+            const dateRegex = /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})|(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})/;
+            const match = text.match(dateRegex);
+            return match ? match[0] : 'Unknown';
+        }
+
+        function extractVendor(text) {
+            const lines = text.split('\n');
+            const vendorRegex = /[A-Z][a-zA-Z\s&]+(?:Inc\.|LLC|Corp\.)?/;
+            for (let line of lines) {
+                const match = line.match(vendorRegex);
+                if (match) return match[0].trim();
+            }
+            return 'Unknown';
+        }
+
+        function extractAmounts(text) {
+            const lines = text.split('\n');
+            let subtotal = '0.00';
+            let total = '0.00';
+
+            // Regex to capture amounts with labels
+            const subtotalRegex = /(subtotal|sub-total)[:\s]*\$?(\d+\.\d{2})/i;
+            const totalRegex = /(total|amount due|balance)[:\s]*\$?(\d+\.\d{2})/i;
+
+            for (let line of lines) {
+                // Extract subtotal
+                const subtotalMatch = line.match(subtotalRegex);
+                if (subtotalMatch) {
+                    subtotal = subtotalMatch[2];
                 }
 
-                console.log('Upload Response:', data);
-                document.getElementById('result').innerHTML = `
-                    <p><strong>Upload successful!</strong></p>
-                    <p>File ID: ${data.id}</p>
-                    <p>View file: <a href="https://drive.google.com/file/d/${data.id}" target="_blank">Open in Google Drive</a></p>
-                `;
-            } catch (error) {
-                console.error('Upload Error:', error);
-                document.getElementById('result').innerHTML = `<p>Error: ${error.message}</p>`;
+                // Extract total
+                const totalMatch = line.match(totalRegex);
+                if (totalMatch) {
+                    total = totalMatch[2];
+                }
             }
-        });
+
+            // If total is not found, assume the largest amount is the total
+            if (total === '0.00') {
+                const amounts = text.match(/\d+\.\d{2}/g) || [];
+                if (amounts.length > 0) {
+                    total = Math.max(...amounts.map(parseFloat)).toFixed(2);
+                }
+            }
+
+            return { subtotal, total };
+        }
+
+        function guessCategoryFromBusinessName(vendor) {
+            const lowerVendor = vendor.toLowerCase();
+            for (const [business, category] of Object.entries(businessCategoryMap)) {
+                if (lowerVendor.includes(business)) {
+                    return category;
+                }
+            }
+            return null; // No match found
+        }
+
+        function extractCategory(text) {
+            const lowerText = text.toLowerCase();
+            for (const [category, keywords] of Object.entries(categoryKeywordMap)) {
+                if (keywords.some(keyword => lowerText.includes(keyword))) {
+                    return category;
+                }
+            }
+            return 'Miscellaneous'; // Default category
+        }
+
+        function extractPaymentMethod(text) {
+            const paymentMethods = ['Visa', 'MasterCard', 'Amex', 'Cash', 'Check', 'PayPal'];
+            for (let method of paymentMethods) {
+                if (text.toLowerCase().includes(method.toLowerCase())) {
+                    return method;
+                }
+            }
+            return 'Unknown';
+        }
+
+        function displayResult(data) {
+            document.getElementById('result').innerHTML = `
+                <h2>${data.vendor}</h2>
+                <p><strong>Date:</strong> ${data.date}</p>
+                <p><strong>Subtotal:</strong> $${data.subtotal.toFixed(2)}</p>
+                <p><strong>Total:</strong> $${data.total.toFixed(2)}</p>
+                <p><strong>Category:</strong> ${data.category}</p>
+                <p><strong>Payment Method:</strong> ${data.paymentMethod}</p>
+                <p><strong>Image:</strong> <a href="${data.imageUrl}" target="_blank">View Receipt</a></p>
+            `;
+        }
+
+        function sendToGoogleSheets(data) {
+            fetch(GOOGLE_SHEETS_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(data),
+            })
+            .then(response => response.text())
+            .then(result => console.log("Google Sheets:", result))
+            .catch(error => console.error("Error:", error));
+        }
+
+        function updateSummary() {
+            let summaryHtml = '<h2>Receipt Summary</h2>';
+            let categoryTotals = {};
+
+            receiptData.forEach(receipt => {
+                if (!categoryTotals[receipt.category]) {
+                    categoryTotals[receipt.category] = 0;
+                }
+                categoryTotals[receipt.category] += receipt.total;
+            });
+
+            for (let category in categoryTotals) {
+                summaryHtml += `<p><strong>${category}:</strong> $${categoryTotals[category].toFixed(2)}</p>`;
+            }
+
+            document.getElementById('summary').innerHTML = summaryHtml;
+            document.getElementById('summary').style.display = 'block';
+        }
     </script>
 </body>
 </html>
