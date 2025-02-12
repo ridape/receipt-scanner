@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Receipt Scanner</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.0.2/tesseract.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        img { max-width: 100%; margin-top: 10px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1); }
+        .card { padding: 10px; border: 1px solid #ccc; border-radius: 8px; margin-top: 10px; }
+        .loading { font-style: italic; color: gray; }
+    </style>
+</head>
+<body>
+    <h1>Receipt Scanner</h1>
+    <input type="file" accept="image/*" id="receiptInput">
+    <br>
+    <img id="preview" style="display:none;" alt="Receipt Preview">
+    <div id="result" class="card" style="display:none;"></div>
+    <div id="summary" class="card" style="margin-top: 20px; display: none;"></div>
+
+    <script>
+        let receiptData = [];
+        const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyVLYCSIxgmiFqzw4ZsPSMq4waugu5TZK_zvw6JDHRybND6h6PKF2HQnA_x-js-zGLq/exec";
+
+        // Mapping of business names to categories
+        const businessCategoryMap = {
+            'staples': 'Office Supplies',
+            'office depot': 'Office Supplies',
+            'hilton': 'Travel',
+            'marriott': 'Travel',
+            'delta': 'Travel',
+            'mcdonalds': 'Meals & Entertainment',
+            'starbucks': 'Meals & Entertainment',
+        };
+
+        // Keyword mapping for categories
+        const categoryKeywordMap = {
+            'Office Supplies': [
+                'office', 'stationery', 'supplies', 'paper', 'printer', 'ink', 'stapler', 'folder', 'notebook', 'pen', 'pencil',
+                'desk', 'chair', 'filing', 'envelope', 'sticky notes', 'tape', 'scissors', 'ruler', 'marker', 'highlighter'
+            ],
+            'Travel': [
+                'flight', 'hotel', 'car rental', 'airport', 'luggage', 'ticket', 'reservation', 'vacation', 'trip', 'boarding pass',
+                'check-in', 'check-out', 'suite', 'motel', 'hostel', 'airline', 'train', 'bus', 'taxi', 'uber', 'lyft'
+            ],
+            'Meals & Entertainment': [
+                'restaurant', 'bistro', 'dining', 'cafe', 'coffee', 'bar', 'pub', 'grill', 'pizza', 'burger', 'sushi', 'steakhouse',
+                'bakery', 'buffet', 'fast food', 'takeout', 'delivery', 'menu', 'tip', 'waiter', 'waitress', 'chef', 'brunch', 'lunch',
+                'dinner', 'dessert', 'wine', 'beer', 'cocktail', 'entertainment', 'movie', 'theater', 'concert', 'ticket', 'show', 'event'
+            ],
+            'Software & Subscriptions': [
+                'software', 'subscription', 'license', 'app', 'application', 'cloud', 'saas', 'platform', 'tool', 'service', 'renewal',
+                'membership', 'plan', 'upgrade', 'download', 'install', 'update', 'patch', 'bug fix', 'feature', 'integration'
+            ],
+            'Utilities': [
+                'electric', 'water', 'internet', 'utility', 'gas', 'power', 'heating', 'cooling', 'air conditioning', 'cable', 'phone',
+                'mobile', 'broadband', 'wifi', 'router', 'modem', 'bill', 'payment', 'meter', 'usage', 'consumption'
+            ],
+            'Marketing & Advertising': [
+                'advertising', 'marketing', 'promotion', 'campaign', 'social media', 'seo', 'sem', 'ppc', 'google ads', 'facebook ads',
+                'instagram ads', 'twitter ads', 'influencer', 'sponsorship', 'branding', 'logo', 'design', 'print', 'flyer', 'brochure',
+                'banner', 'poster', 'email', 'newsletter', 'analytics', 'metrics', 'roi', 'ctr', 'conversion'
+            ],
+            'Miscellaneous': [] // Default category
+        };
+
+        document.getElementById('receiptInput').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    document.getElementById('preview').src = e.target.result;
+                    document.getElementById('preview').style.display = 'block';
+                    processReceipt(e.target.result);
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        async function processReceipt(imageSrc) {
+            document.getElementById('result').innerHTML = '<p class="loading">Processing receipt, please wait...</p>';
+            document.getElementById('result').style.display = 'block';
+
+            try {
+                const { data: { text } } = await Tesseract.recognize(imageSrc, 'eng', { logger: m => console.log(m) });
+                const extractedData = extractRelevantData(text);
+                receiptData.push(extractedData);
+                updateSummary();
+                sendToGoogleSheets(extractedData);
+                displayResult(extractedData);
+            } catch (error) {
+                document.getElementById('result').innerHTML = '<p>Error processing the receipt.</p>';
+                console.error(error);
+            }
+        }
+
+        function extractRelevantData(text) {
+            let date = extractDate(text);
+            let vendor = extractVendor(text);
+            let { subtotal, total } = extractAmounts(text);
+            let category = guessCategoryFromBusinessName(vendor) || extractCategory(text); // Guess category from business name first
+            let paymentMethod = extractPaymentMethod(text);
+
+            return {
+                date,
+                vendor,
+                subtotal: parseFloat(subtotal),
+                total: parseFloat(total),
+                category,
+                description: 'N/A',
+                paymentMethod,
+            };
+        }
+
+        function extractDate(text) {
+            const dateRegex = /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})|(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})/;
+            const match = text.match(dateRegex);
+            return match ? match[0] : 'Unknown';
+        }
+
+        function extractVendor(text) {
+            const lines = text.split('\n');
+            const vendorRegex = /[A-Z][a-zA-Z\s&]+(?:Inc\.|LLC|Corp\.)?/;
+            for (let line of lines) {
+                const match = line.match(vendorRegex);
+                if (match) return match[0].trim();
+            }
+            return 'Unknown';
+        }
+
+        function extractAmounts(text) {
+            const lines = text.split('\n');
+            let subtotal = '0.00';
+            let total = '0.00';
+
+            // Regex to capture amounts with labels
+            const subtotalRegex = /(subtotal|sub-total)[:\s]*\$?(\d+\.\d{2})/i;
+            const totalRegex = /(total|amount due|balance)[:\s]*\$?(\d+\.\d{2})/i;
+
+            for (let line of lines) {
+                // Extract subtotal
+                const subtotalMatch = line.match(subtotalRegex);
+                if (subtotalMatch) {
+                    subtotal = subtotalMatch[2];
+                }
+
+                // Extract total
+                const totalMatch = line.match(totalRegex);
+                if (totalMatch) {
+                    total = totalMatch[2];
+                }
+            }
+
+            // If total is not found, assume the largest amount is the total
+            if (total === '0.00') {
+                const amounts = text.match(/\d+\.\d{2}/g) || [];
+                if (amounts.length > 0) {
+                    total = Math.max(...amounts.map(parseFloat)).toFixed(2);
+                }
+            }
+
+            return { subtotal, total };
+        }
+
+        function guessCategoryFromBusinessName(vendor) {
+            const lowerVendor = vendor.toLowerCase();
+            for (const [business, category] of Object.entries(businessCategoryMap)) {
+                if (lowerVendor.includes(business)) {
+                    return category;
+                }
+            }
+            return null; // No match found
+        }
+
+        function extractCategory(text) {
+            const lowerText = text.toLowerCase();
+            for (const [category, keywords] of Object.entries(categoryKeywordMap)) {
+                if (keywords.some(keyword => lowerText.includes(keyword))) {
+                    return category;
+                }
+            }
+            return 'Miscellaneous'; // Default category
+        }
+
+        function extractPaymentMethod(text) {
+            const paymentMethods = ['Visa', 'MasterCard', 'Amex', 'Cash', 'Check', 'PayPal'];
+            for (let method of paymentMethods) {
+                if (text.toLowerCase().includes(method.toLowerCase())) {
+                    return method;
+                }
+            }
+            return 'Unknown';
+        }
+
+        function displayResult(data) {
+            document.getElementById('result').innerHTML = `
+                <h2>${data.vendor}</h2>
+                <p><strong>Date:</strong> ${data.date}</p>
+                <p><strong>Subtotal:</strong> $${data.subtotal.toFixed(2)}</p>
+                <p><strong>Total:</strong> $${data.total.toFixed(2)}</p>
+                <p><strong>Category:</strong> ${data.category}</p>
+                <p><strong>Payment Method:</strong> ${data.paymentMethod}</p>
+            `;
+        }
+
+        function sendToGoogleSheets(data) {
+            fetch(GOOGLE_SHEETS_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(data),
+            })
+            .then(response => response.text())
+            .then(result => console.log("Google Sheets:", result))
+            .catch(error => console.error("Error:", error));
+        }
+
+        function updateSummary() {
+            let summaryHtml = '<h2>Receipt Summary</h2>';
+            let categoryTotals = {};
+
+            receiptData.forEach(receipt => {
+                if (!categoryTotals[receipt.category]) {
+                    categoryTotals[receipt.category] = 0;
+                }
+                categoryTotals[receipt.category] += receipt.total;
+            });
+
+            for (let category in categoryTotals) {
+                summaryHtml += `<p><strong>${category}:</strong> $${categoryTotals[category].toFixed(2)}</p>`;
+            }
+
+            document.getElementById('summary').innerHTML = summaryHtml;
+            document.getElementById('summary').style.display = 'block';
+        }
+    </script>
+</body>
+</html>
