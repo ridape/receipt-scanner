@@ -211,7 +211,7 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(data),
             })
-            .then(response => response.text())
+            .then(response => response.json())
             .then(result => console.log("Google Sheets:", result))
             .catch(error => console.error("Error:", error));
         }
