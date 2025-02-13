@@ -22,7 +22,7 @@
 
     <script>
         let receiptData = [];
-        const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbwpLJZoJ_9098ZemvuVlhFY07dOsD3Tw4lcj3_2e93dCR2Wax8lYyTlI5kEYTfpd0hkjA/exec";
+        const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyvN7TDhFzZ9NI2cnI8ViPBuXFXG61wXDqb3qYMH_0swyNwNXF86soNXVcvj92NP8dwig/exec";
 
         // Mapping of business names to categories
         const businessCategoryMap = {
@@ -211,9 +211,18 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(data),
             })
-            .then(response => response.json())
-            .then(result => console.log("Google Sheets:", result))
-            .catch(error => console.error("Error:", error));
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error("Network response was not ok");
+                }
+                return response.json();
+            })
+            .then(result => {
+                console.log("Google Sheets:", result);
+            })
+            .catch(error => {
+                console.error("Error:", error);
+            });
         }
 
         function updateSummary() {
